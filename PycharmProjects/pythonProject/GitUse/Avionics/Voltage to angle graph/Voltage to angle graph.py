@@ -10,7 +10,7 @@ plt.figure(figsize = (10,10))   #plot voltage vs time graph
 plt.plot(time, sensor0, color = "red")
 plt.xlabel("Time [ms]")
 plt.ylabel("Voltage [mV]")
-plt.title("Voltage vs time for encoder")
+plt.title("Voltage vs time for potentiometer")
 
 plt.savefig("Voltage-angle_graph.jpg",dpi=300, bbox_inches = "tight")   #save graph
 plt.show()
