@@ -20,194 +20,218 @@
 
 ##########################################
 
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk, messagebox
-from typing import Optional, Dict, Any, List
+from tkinter import messagebox
 
-#Call other example codes
 import Servo_example
 import GS_example
 import Arm_example
 
-class GS_example:
-    connection_status = "connected"
-class Arm_example:
-    def toggle_safety_switch(mav, state): return True
-    def toggle_arming_switch(mav, state): return True
-
-#Class for Servo UI functions
-class ServoUI:
-    SERVO_CONFIG_LIST: List[Dict[str, Any]] = [
-    {"name": "Servo 1", "channel": 6, "default_angle": 10},
-    {"name": "Servo 2", "channel": 7, "default_angle": 0},
-    {"name": "idk Servo 3?", "channel": 10, "default_angle": 45},]
-
-    #How the UI looks function
-    def __init__(self, root: tk.Tk, servo_config: Optional[Servo_example.ServoController] = None):
-        #Initialize the main window and store the servo configuration
-        self.root = root
-        self.root.title("Servo Control")
+class ServoUI(ctk.CTk):
+    def __init__(self, servo_config=None):
+        # Initialize the main window
+        super().__init__()
+        self.title("Servo Control")
+        self.geometry("800x600")
         self.servo_config = servo_config
-
-        #Dictionary to hold the Entry widgets for dynamic access (channel ID -> widget)
-        self.angle_entries: Dict[int, ttk.Entry] = {}
-
-        style = ttk.Style(self.root)
-        style.theme_use('clam')
-        style.configure('Connected.TLabel', background='green', foreground='white', font=('Arial', 10, 'bold'))
-        style.configure('Disconnected.TLabel', background='red', foreground='white', font=('Arial', 10, 'bold'))
-        style.configure('ArmStatus.TLabel', font=('Arial', 10, 'bold'))
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
-        # Use a main frame for padding and structure
-        main_frame = ttk.Frame(root, padding="10")
-        main_frame.grid(row=0, column=0, sticky='nsew')
-        main_frame.columnconfigure(0, weight=1)
         
-        # Start tracking the row for placement
-        current_row = 0
+        ctk.set_appearance_mode("light") #You can change it to light mode if you wanna be boring :P
+        ctk.set_default_color_theme("blue")
 
-        # --- 1. Connection Status (Header) ---
-        current_row = self._create_status_panel(main_frame, current_row)
+        #Configure main window grid
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # --- 2. Multiple Servo Control (Dynamic) ---
-        current_row = self._create_multi_servo_panel(main_frame, current_row)
+        # Left area for status
+        self.sidebar_frame = ctk.CTkFrame(self, width=140, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(4, weight=1) # Push content down
 
-        # --- 3. Safety and Arming Controls ---
-        current_row = self._create_arming_panel(main_frame, current_row)
-        
+        #Main Content frame
+        self.main_frame = ctk.CTkFrame(self, corner_radius=0)
+        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=0) #Allows dashboard area to expand
+        self.main_frame.grid_rowconfigure(1, weight=1) 
+
+        # Initialize variables
+        self.safety_enabled = True
+        self.armed = False
+        self.angle_entries = [] 
+
+        # Populate the frames
+        self._setup_sidebar()
+        self._setup_main_content()
+
         # Start status updater loop
         self.update_status()
 
-        #Connection status display
+    # --- Setup Functions ---
+
+    def _setup_sidebar(self):
+        #Left status display
+        ctk.CTkLabel(self.sidebar_frame, text="Status display", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
+        
+        #Connection Status
         self.status_var = tk.StringVar(value=GS_example.connection_status.capitalize())
-        ttk.Label(root, text="Status:").grid(row=0, column=0)
-        ttk.Label(root, textvariable=self.status_var, foreground="red").grid(row=0, column=1)
+        
+        status_label = ctk.CTkLabel(self.sidebar_frame, textvariable=self.status_var)
+        status_label.grid(row=1, column=0, padx=20, pady=(5, 5))
+        self.status_label = status_label 
 
-       
-
-        #Entry field for angle input
-        ttk.Label(root, text="Angle (°) for servo 1:").grid(row=1, column=0)
-        self.angle_entry = ttk.Entry(root)
-        self.angle_entry.grid(row=1, column=1)
-
-        ttk.Label(root, text="Angle (°) for servo 2:").grid(row=1, column=0)
-        self.angle_entry = ttk.Entry(root)
-        self.angle_entry.grid(row=2, column=1)
-
-        ttk.Label(root, text="Angle (°) for servo 3:").grid(row=1, column=0)
-        self.angle_entry = ttk.Entry(root)
-        self.angle_entry.grid(row=3, column=1)
-
-        #Button to send the angle to the servo
-        ttk.Button(root, text="Send", command=self.send_angle).grid(row=2, column=0, columnspan=2, pady=5)
-        ttk.Button(root, text="Send", command=self.send_angle).grid(row=3, column=0, columnspan=2, pady=5)
-        ttk.Button(root, text="Send", command=self.send_angle).grid(row=4, column=0, columnspan=2, pady=5)
-
-
-        #Safety switch button
-        self.safety_enabled = True
-        self.safety_button = ttk.Button(
-            root,
-            text="Safety Enabled (Click to toggle)" if self.safety_enabled else "Safety Disabled (Click to toggle)",
-            command=self.toggle_safety
+        #Safety & Arming Controls
+        self.safety_button = ctk.CTkButton(
+            self.sidebar_frame, text="Safety Enabled", command=self.toggle_safety
         )
-        self.safety_button.grid(row=3, column=0, columnspan=2, pady=5)
+        self.safety_button.grid(row=2, column=0, padx=20, pady=5)
 
-        #Arming button
-        self.armed = False
-        self.arming_button = ttk.Button(
-            root,
-            text="Arming Disabled (Click to toggle)",
-            command=self.toggle_arming
+        self.arming_button = ctk.CTkButton(
+            self.sidebar_frame, text="Arming Disabled", command=self.toggle_arming
         )
-        self.arming_button.grid(row=4, column=0, columnspan=2, pady=5)
-
-        #Arming status label
-        self.arming_status_label = ttk.Label(
-            root,
-            text="DISARMED - NO LOGGING",
-            background="red",
-            foreground="white"
+        self.arming_button.grid(row=3, column=0, padx=20, pady=5)
+        
+        #Disarmed Status Label
+        self.arming_status_label = ctk.CTkLabel(
+            self.sidebar_frame,
+            text="DISARMED\nNO LOGGING",
+            text_color="white",
+            fg_color="red",
+            corner_radius=6
         )
-        self.arming_status_label.grid(row=5, column=0, columnspan=2, pady=5)
+        self.arming_status_label.grid(row=5, column=0, padx=20, pady=(10, 20), sticky="s")
 
-        #Start status updater loop
-        self.update_status()
 
-    #safety switch action function
+    def _setup_main_content(self):
+        # A. Data Display Area 
+        data_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
+        data_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        data_frame.grid_columnconfigure(0, weight=1)
+        
+        # Placeholder Label
+        ctk.CTkLabel(data_frame, text="AERA FOR DASHBOARD :P",
+                     font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+        
+        # Flap Data Display (work in progress)
+        ctk.CTkLabel(data_frame, text="Flap Position: --", justify="right").grid(row=1, column=0, padx=10, sticky="e")
+        ctk.CTkLabel(data_frame, text="Flap Angle: -- °", justify="right").grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e")
+        
+        #Servo controls
+        controls_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
+        controls_frame.grid(row=1, column=0, sticky="ew", pady=(0, 20))
+        controls_frame.grid_columnconfigure(0, weight=1)
+        controls_frame.grid_columnconfigure(1, weight=1)
+
+        #Servo angles
+        angle_group_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        angle_group_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        
+        for i in range(1, 4):
+            row = i - 1
+            label_text = f"Angle {i} (°):"
+            
+            ctk.CTkLabel(angle_group_frame, text=label_text).grid(row=row, column=0, sticky="w", padx=5, pady=5)
+            
+            angle_entry = ctk.CTkEntry(angle_group_frame, width=80)
+            angle_entry.grid(row=row, column=1, padx=5, pady=5)
+            self.angle_entries.append(angle_entry)
+            
+            # Use lambda to pass the correct index (i.e., which servo)
+            ctk.CTkButton(angle_group_frame, text="Send", width=60, 
+                          command=lambda idx=i: self.send_angle(idx - 1)).grid(row=row, column=2, padx=5, pady=5)
+
+        #attitude
+        attitude_group_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        attitude_group_frame.grid(row=0, column=1, padx=20, pady=20, sticky="e")
+        
+        ctk.CTkLabel(attitude_group_frame, text="ATTITUDE (m)").pack(pady=(0, 5))
+        
+        #Attitude Display
+        self.attitude_entry = ctk.CTkEntry(attitude_group_frame, width=215,height=30, 
+                                           font=ctk.CTkFont(size=16, weight="bold"), 
+                                           placeholder_text="-- Mission Planner Data --")
+        self.attitude_entry.pack(pady=(0, 5))
+        
+
+    
+
     def toggle_safety(self):
-        #Toggles the safety switch state on the flight controller
+        # Toggles the safety switch state
         if not self.servo_config:
             messagebox.showwarning("Not connected", "Connect first.")
             return
-        mav = self.servo_config.mav
-        #Toggle the state
+            
+        mav = getattr(self.servo_config, 'mav', None)
+        if not mav:
+             messagebox.showwarning("Error", "MAVLink connection not initialized.")
+             return
+             
         new_state = not self.safety_enabled
-        success = Arm_example.toggle_safety_switch(mav, new_state) #calls arming example code
-        #Update button text based on new state
+        success = Arm_example.toggle_safety_switch(mav, new_state) 
+        
         if success:
             self.safety_enabled = new_state
-            if self.safety_enabled:
-                self.safety_button.config(text="Safety Enabled (Click to toggle)")
-            else:
-                self.safety_button.config(text="Safety Disabled (Click to toggle)")
+            self.safety_button.configure(text="Safety Enabled" if self.safety_enabled else "Safety Disabled")
         else:
             messagebox.showerror("Safety Switch", "Failed to toggle safety switch.")
 
-    #arming action function
     def toggle_arming(self):
-        #Toggles the arming state of the vehicle
+        # Toggles the arming state
         if not self.servo_config:
             messagebox.showwarning("Not connected", "Connect first.")
             return
-        mav = self.servo_config.mav
+            
+        mav = getattr(self.servo_config, 'mav', None)
+        if not mav:
+             messagebox.showwarning("Error", "MAVLink connection not initialized.")
+             return
+             
         self.armed = not self.armed
-        success = Arm_example.toggle_arming_switch(mav, self.armed) #calls arming example code
+        success = Arm_example.toggle_arming_switch(mav, self.armed)
+        
         if success:
             if self.armed:
-                self.arming_button.config(text="Arming Enabled (Click to toggle)")
-                self.arming_status_label.config(text="ARMED AND LOGGING", background="green", foreground="white")
+                self.arming_button.configure(text="Arming Enabled")
+                self.arming_status_label.configure(text="ARMED\nAND LOGGING", fg_color="green")
             else:
-                self.arming_button.config(text="Arming Disabled (Click to toggle)")
-                self.arming_status_label.config(text="DISARMED - NO LOGGING", background="red", foreground="white")
-
-    #connection status action function
+                self.arming_button.configure(text="Arming Disabled")
+                self.arming_status_label.configure(text="DISARMED\nNO LOGGING", fg_color="red")
+        
     def update_status(self):
-        #Updates the connection status label every 1000 miliseconds
-        self.status_var.set(GS_example.connection_status.capitalize()) #call GS example code
-        self.root.after(1000, self.update_status)
+        # Updates the connection status label
+        status = GS_example.connection_status.capitalize() 
+        self.status_var.set(status) 
+        
+        # Change color based on status
+        color = "green" if status == "Connected" else "red"
+        self.status_label.configure(text_color=color)
+        
+        self.after(1000, self.update_status)
 
-    #servo configuration function
-    def set_servo_controller(self, servo_config):
-        self.servo_config = servo_config #writes servo configuration
-
-    #servo angle action function
-    def send_angle(self):
-        #Sends angle value entered by the user to the servo
-        if not self.servo_config: #check if connected
+    def send_angle(self, servo_index: int):
+        # Sends angle value entered by the user to the specific servo
+        if not self.servo_config: 
             messagebox.showwarning("Not connected", "Connect first.")
             return
         try:
-            angle = float(self.angle_entry.get()) #Get angle from input
-            self.servo_config.send_angle(angle) #Send angle via MAVLink
-        except Exception as e: #error handling
+            angle = float(self.angle_entries[servo_index].get())
+            # self.servo_config.send_angle(servo_index + 1, angle) # Actual send command
+            messagebox.showinfo("Sent", f"Sent angle {angle}° to Servo {servo_index + 1}")
+        except ValueError:
+            messagebox.showerror("Input Error", "Please enter a valid number for the angle.")
+        except Exception as e: 
             messagebox.showerror("Send Error", str(e))
 
-#Independence call
-if __name__ == "__main__":#allows this script to be ran independently
-    #can be used to test if it works before integrating into wider system
-    #useful for debugging
-    root = tk.Tk() #Creates the main application window for the UI using Tkinter
+# Independence call
+if __name__ == "__main__":
+    # Create the ctk root and run the application
     servo_config = None
     try:
-        #Attempt to connect to the servo controller
-        servo_config = Servo_example.ServoController()  #Adjust class name
-    except Exception as e: #error handling
-        messagebox.showwarning("Connection Error", f"Could not connect to servo: {e}")
+        servo_config = Servo_example()  
+        GS_example.connection_status = "connected" 
+    except Exception as e: 
+        GS_example.connection_status = "disconnected" 
         servo_config = None
 
-    #Launch the Servo UI
-    servo_ui = ServoUI(root, servo_config)
-    root.mainloop()
+    app = ServoUI(servo_config)
+    app.mainloop()
