@@ -1,13 +1,14 @@
 ##########################################
 # Servo Control UI
 # Author: Bhakti Jenna, Weilian Chen
-# Updated: Multi-Servo Support + Dynamic Debug Mode
+# Updated: Multi-Servo Support + Debug Mode + Lua Trigger
 ##########################################
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
 import time
 from New_Ground import get_connection_status, get_attitude
+from pymavlink import mavutil
 
 
 class ServoUI(ctk.CTk):
@@ -63,7 +64,7 @@ class ServoUI(ctk.CTk):
         """Setup left sidebar with connection/status controls"""
         self.sidebar_frame = ctk.CTkFrame(self, width=140, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+        self.sidebar_frame.grid_rowconfigure(7, weight=1) # Adjusted for extra buttons
 
         ctk.CTkLabel(
             self.sidebar_frame, text="Status Monitor",
@@ -77,7 +78,6 @@ class ServoUI(ctk.CTk):
         )
         self.status_label.grid(row=1, column=0, padx=20, pady=(5, 5))
 
-        # Debug Mode Toggle Button
         self.debug_button = ctk.CTkButton(
             self.sidebar_frame, text="Enter Debug Mode",
             fg_color="gray", command=self.toggle_debug_mode
@@ -96,12 +96,25 @@ class ServoUI(ctk.CTk):
         )
         self.arming_button.grid(row=4, column=0, padx=20, pady=5)
 
+        # LUA CONTROL BUTTONS
+        self.lua_start_button = ctk.CTkButton(
+            self.sidebar_frame, text="Start Lua Script",
+            fg_color="#2c6e49", command=lambda: self.trigger_lua(1)
+        )
+        self.lua_start_button.grid(row=5, column=0, padx=20, pady=5)
+
+        self.lua_stop_button = ctk.CTkButton(
+            self.sidebar_frame, text="Stop Lua Script",
+            fg_color="#a11d33", command=lambda: self.trigger_lua(0)
+        )
+        self.lua_stop_button.grid(row=6, column=0, padx=20, pady=5)
+
         self.arming_status_label = ctk.CTkLabel(
             self.sidebar_frame, text="DISARMED\nNo LOGGING",
             text_color="white", fg_color="red",
             corner_radius=6, padx=10, pady=10
         )
-        self.arming_status_label.grid(row=6, column=0, padx=20, pady=(10, 20), sticky="s")
+        self.arming_status_label.grid(row=8, column=0, padx=20, pady=(10, 20), sticky="s")
 
     def _setup_main_content(self):
         """Setup main content area with dashboard and categorized control surfaces"""
@@ -154,7 +167,6 @@ class ServoUI(ctk.CTk):
 
     def _build_servo_grid(self):
         """Clears and rebuilds the servo grid based on current mode"""
-        # Clear existing widgets
         for widget in self.servo_container.winfo_children():
             widget.destroy()
         
@@ -162,7 +174,6 @@ class ServoUI(ctk.CTk):
         current_row = 0
 
         if not self.debug_mode:
-            # Default Mode: Control Surfaces
             for section, surfaces in self.aircraft_mapping.items():
                 ctk.CTkLabel(self.servo_container, text=section, 
                              font=ctk.CTkFont(size=15, weight="bold"),
@@ -184,7 +195,6 @@ class ServoUI(ctk.CTk):
                                       row=row_offset, column=col_offset + 2, padx=5, pady=5)
                 current_row += 1
         else:
-            # Debug Mode: 8 Individual Servo Controls
             ctk.CTkLabel(self.servo_container, text="DEBUG MODE: Individual Servo Control", 
                          font=ctk.CTkFont(size=15, weight="bold"),
                          text_color="#d35b5b").grid(row=0, column=0, pady=15)
@@ -203,13 +213,32 @@ class ServoUI(ctk.CTk):
                                   row=row_offset, column=col_offset+2, padx=5)
 
     def toggle_debug_mode(self):
-        """Toggle between Normal and Debug modes"""
         self.debug_mode = not self.debug_mode
         if self.debug_mode:
             self.debug_button.configure(text="Exit Debug Mode", fg_color="#d35b5b")
         else:
             self.debug_button.configure(text="Enter Debug Mode", fg_color="gray")
         self._build_servo_grid()
+
+    def trigger_lua(self, action):
+        """Standardized way to trigger Lua from the UI"""
+        if not self.mav:
+            messagebox.showwarning("Warning", "No MAVLink connection")
+            return
+
+        # Action: 0=Stop, 1=Start, 2=Restart
+        self.mav.mav.command_long_send(
+            self.mav.target_system,
+            self.mav.target_component,
+            mavutil.mavlink.MAV_CMD_SCRIPTING, # Command ID
+            0,                                # Confirmation
+            0,                                # Param 1: Script ID
+            action,                           # Param 2: Action
+            0, 0, 0, 0, 0                     # Unused
+        )
+        
+        status_map = {0: "Stopped", 1: "Started", 2: "Restarted"}
+        messagebox.showinfo("Lua Trigger", f"Script successfully {status_map.get(action, 'Triggered')}")
 
     def toggle_safety(self):
         if not self.mav:
@@ -239,7 +268,6 @@ class ServoUI(ctk.CTk):
             )
 
     def send_angle(self, servo_indices, surface_name):
-        """Send target angle to one or multiple linked servos"""
         if not self.mav:
             messagebox.showwarning("Warning", "No MAVLink connection")
             return
