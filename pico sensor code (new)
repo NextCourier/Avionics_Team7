@@ -1,0 +1,114 @@
+import struct
+import time
+from machine import Pin, UART, Timer
+
+
+# --- Define Pins in use ---
+
+P_A = 10	#Port Sensor Channel A
+P_B = 12	#Port Sensor Channel B
+S_A = 14	#Starboard Sensor Channel A
+S_B = 16	#Starboard Sensor Channel B
+
+
+
+# --- MAVLink CRC-16/MCRF4XX Constants ---
+# ArduPilot requires this to accept the packet
+def crc8_accumulate(b, crc):
+    accum = b ^ (crc & 0xff)
+    accum ^= (accum << 4) & 0xff
+    return ((crc >> 8) ^ (accum << 8) ^ (accum << 3) ^ (accum >> 4)) & 0xFFFF
+
+def calculate_crc(data, extra):
+    crc = 0xFFFF
+    for b in data:
+        crc = crc8_accumulate(b, crc)
+    crc = crc8_accumulate(extra, crc)
+    return crc
+
+# --- Encoder Class ---
+class AngleSensor:
+    def __init__(self, pin_a, pin_b, ppr):
+        self.pin_a = Pin(pin_a, Pin.IN, Pin.PULL_UP)
+        self.pin_b = Pin(pin_b, Pin.IN, Pin.PULL_UP)
+        self.steps_per_rev = ppr * 4
+        self.count = 0
+        
+        # Quadrature interrupts
+        self.pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._callback)
+        self.pin_b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._callback)
+
+    def _callback(self, pin):
+        # High-speed state machine
+        if self.pin_a.value() ^ self.pin_b.value():
+            self.count += 1
+        else:
+            self.count -= 1
+
+    def reset(self):
+        self.count = 0
+
+    @property
+    def angle(self):
+        # Returns float degrees
+        return (self.count / self.steps_per_rev) * 360
+
+# --- Settings & Hardware ---
+UART_BAUD = 115200
+MAV_SYS_ID = 1      # Match your Cube's SYSID_THISMAV
+MAV_COMP_ID = 1     # Standard component ID
+MSG_ID_NAMED_FLOAT = 251
+CRC_EXTRA = 170     # Specific to NAMED_VALUE_FLOAT
+
+# UART0 on GP0 (TX) and GP1 (RX)
+uart = UART(0, baudrate=UART_BAUD, tx=Pin(0), rx=Pin(1))
+
+# Initialize Sensors (AMT103 at 1000 PPR = 4000 steps/rev)
+sensor_1 = AngleSensor(14, 15, 1000)
+sensor_2 = AngleSensor(16, 17, 1000)
+
+# --- MAVLink Functions ---
+
+def send_mavlink_float(name, value):
+    """Packages and sends a NAMED_VALUE_FLOAT MAVLink 1 packet"""
+    name_bytes = (name[:10]).encode('utf-8').ljust(10, b'\x00')
+    payload = struct.pack("<If10s", int(time.ticks_ms()), value, name_bytes)
+    
+    # Header: [STX, LEN, SEQ, SYS, COMP, MSGID]
+    header = struct.pack("<BBBBBB", 0xFE, len(payload), 0, MAV_SYS_ID, MAV_COMP_ID, MSG_ID_NAMED_FLOAT)
+    
+    # Checksum calculation (Exclude STX)
+    crc = calculate_crc(header[1:] + payload, CRC_EXTRA)
+    
+    # Final assembly
+    uart.write(header + payload + struct.pack("<H", crc))
+
+def check_for_gcs_commands():
+    """Checks UART for a reset signal from your Python GCS"""
+    if uart.any():
+        # Look for your custom 'ZERO_FLAPS' string sent from your GCS
+        # Using a raw string is simpler than parsing a full MAVLink Command RX
+        raw_input = uart.read()
+        if b"ZERO_FLAPS" in raw_input:
+            sensor_1.reset()
+            sensor_2.reset()
+            print("Flaps Zeroed via GCS Signal")
+
+# --- Main Execution Loop ---
+
+def main_tick(timer):
+    # 1. Check if GCS wants to zero the sensors
+    check_for_gcs_commands()
+    
+    # 2. Transmit current flap angles
+    send_mavlink_float("FlapL", sensor_1.angle)
+    send_mavlink_float("FlapR", sensor_2.angle)
+    
+print("Left: {:.2f}° | Right: {:.2f}°".format(sensor_1.angle, sensor_2.angle))
+
+# 10Hz Timer (every 100ms)
+timer = Timer()
+timer.init(freq=10, mode=Timer.PERIODIC, callback=main_tick)
+
+print("Pico Flap Monitor Active...")
+print("Listening for 'ZERO_FLAPS' on UART RX...")
