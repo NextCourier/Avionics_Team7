@@ -1,0 +1,32 @@
+from machine import Pin
+import time
+
+# Update these to the pins you are actually using
+pin_a = Pin(14, Pin.IN)
+pin_b = Pin(15, Pin.IN)
+
+counter = 0
+ppr = 500
+counts_per_rev = ppr * 2  # 800 counts for a full circle
+
+def encoder_handler(pin):
+    global counter
+    # Read current state of both pins
+    a = pin_a.value()
+    b = pin_b.value()
+    
+    # Quadrature logic: if A leads B, increment; else decrement
+    if a == b:
+        counter += 1
+    else:
+        counter -= 1
+
+# Attach interrupts to BOTH rising and falling edges of Pin A
+pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder_handler)
+
+print("Starting manual test...")
+
+while True:
+    angle = (counter % counts_per_rev) * (360 / counts_per_rev)
+    print(f"Raw Count: {counter} | Angle: {angle:.2f}°", end="\r")
+    time.sleep(0.01)
