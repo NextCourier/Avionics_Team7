@@ -1,0 +1,106 @@
+import struct
+import time
+from machine import UART, Pin
+
+# --- Configuration ---
+current_wing = "FlapL"
+counter = 0
+
+# Encoder Setup (GP2, GP3)
+pin_a = Pin(2, Pin.IN, Pin.PULL_UP)
+pin_b = Pin(3, Pin.IN, Pin.PULL_UP)
+
+def encoder_handler(pin):
+    global counter
+    if pin_a.value() == pin_b.value():
+        counter += 1
+    else:
+        counter -= 1
+
+pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder_handler)
+
+# UART Setup (GP4/TX, GP5/RX)
+# Ensure SERIAL2_BAUD in Mission Planner is 115
+uart = UART(1, baudrate=115200, tx=Pin(4), rx=Pin(5))
+
+# MAVLink Constants for RC_CHANNELS_OVERRIDE
+MAV_SYS_ID = 1      
+MAV_COMP_ID = 1     
+MSG_ID_RC_OVERRIDE = 70
+CRC_EXTRA = 124  # Mandatory extra byte for Message ID 70
+
+# --- CRC Functions ---
+def crc8_accumulate(b, crc):
+    accum = b ^ (crc & 0xff)
+    accum ^= (accum << 4) & 0xff
+    return ((crc >> 8) ^ (accum << 8) ^ (accum << 3) ^ (accum >> 4)) & 0xFFFF
+
+def calculate_crc(data, extra):
+    crc = 0xFFFF
+    for b in data:
+        crc = crc8_accumulate(b, crc)
+    crc = crc8_accumulate(extra, crc)
+    return crc
+
+# --- Communication Functions ---
+
+def check_commands():
+    global counter, current_wing
+    if uart.any():
+        cmd = uart.read()
+        if b"ZERO_FLAPS" in cmd:
+            counter = 0
+            print("Command Received: Resetting Encoder to 0")
+        if b"TOGGLE_WING" in cmd:
+            current_wing = "FlapR" if current_wing == "FlapL" else "FlapL"
+            print(f"Command Received: Labeling as {current_wing}")
+
+def send_rc_override(angle):
+    """
+    Sends the flap angle as a PWM value (1000-2000) on RC Channel 8.
+    MAVLink ID: 70 (RC_CHANNELS_OVERRIDE)
+    """
+    # Scale Angle (0-360) to PWM (1000-2000)
+    # Formula: (angle / 360) * 1000 + 1000
+    pwm_value = int((angle / 360) * 1000 + 1000)
+    pwm_value = max(1000, min(2000, pwm_value)) # Safety clamp
+
+    # Payload: target_system, target_component, 8x uint16 channels
+    # We use 65535 for channels 1-7 to tell ArduPilot to 'ignore' them
+    target_sys = 1
+    target_comp = 1
+    chan1_7 = 65535
+    
+    # Pack format: B=uint8, H=uint16
+    payload = struct.pack("<BBHHHHHHHH", 
+                          target_sys, 
+                          target_comp, 
+                          chan1_7, chan1_7, chan1_7, chan1_7, 
+                          chan1_7, chan1_7, chan1_7, pwm_value)
+
+    # Header: [STX, LEN, SEQ, SYSID, COMPID, MSGID]
+    header = struct.pack("<BBBBBB", 
+                         0xFE, len(payload), 0, MAV_SYS_ID, MAV_COMP_ID, MSG_ID_RC_OVERRIDE)
+
+    # Calculate CRC (Exclude STX)
+    crc = calculate_crc(header[1:] + payload, CRC_EXTRA)
+
+    # Send packet
+    uart.write(header + payload + struct.pack("<H", crc))
+
+# --- Main Loop ---
+print("Pico RC-Override Yapper Active...")
+
+while True:
+    check_commands()
+    
+    # Calculate Angle (Using 1000 counts per rev)
+    angle = (counter % 1000) * (360 / 1000)
+    
+    # Send as RC Channel 8
+    send_rc_override(angle)
+    
+    # Show in Thonny
+    print(f"Wing: {current_wing} | Angle: {angle:.2f} | PWM Out: {int((angle/360)*1000+1000)}", end="\r")
+    
+    time.sleep(0.05)
