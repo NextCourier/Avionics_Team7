@@ -1,7 +1,7 @@
 ##########################################
 # Servo Control UI
 # Authors: Bhakti Jenna, Weilian Chen, Ismail Zarif
-# Updated: Integrated Pico Flap Monitoring + Multi-Servo PWM Display
+# Updated: Integrated Pico Flap Monitoring (RC Override Method)
 ##########################################
 
 import customtkinter as ctk
@@ -194,7 +194,6 @@ class ServoUI(ctk.CTk):
                     ctk.CTkLabel(group_frame, text=f"{surface_name}:").grid(row=row, column=col, padx=5, pady=5, sticky="e")
                     entry = ctk.CTkEntry(group_frame, width=75); entry.grid(row=row, column=col + 1, padx=5, pady=5)
                     
-                    # Bind PWM preview to key release
                     entry.bind("<KeyRelease>", lambda e, k=tuple(indices): self.update_pwm_display(k))
                     self.surface_entries[tuple(indices)] = entry
                     
@@ -205,7 +204,6 @@ class ServoUI(ctk.CTk):
                     ctk.CTkButton(group_frame, text="Send", width=60, command=lambda idxs=indices, name=surface_name: self.send_angle(idxs, name)).grid(row=row, column=col + 3, padx=5, pady=5)
                 current_row += 1
         else:
-            # Layout for Debug individual servo mode
             debug_frame = ctk.CTkFrame(self.servo_container, fg_color="transparent"); debug_frame.grid(row=1, column=0, padx=30, pady=10)
             for i in range(8):
                 row, col = i // 2, (i % 2) * 4
@@ -232,18 +230,25 @@ class ServoUI(ctk.CTk):
             messagebox.showinfo("Pico", "Zeroing command sent.")
 
     def poll_flap_data(self):
-        """Polls MAVLink for NAMED_VALUE_FLOAT messages from Pico"""
+        """
+        Polls MAVLink for RC_CHANNELS_OVERRIDE messages from Pico on Channel 8.
+        Scales PWM (1000-2000) back to Angle (0-360).
+        """
         if self.mav:
             try:
-                msg = self.mav.recv_match(type='NAMED_VALUE_FLOAT', blocking=False)
-                if msg and msg.name == self.active_wing_label:
-                    self.current_flap_angle = msg.value
+                # Listen for RC Override (ID 70)
+                msg = self.mav.recv_match(type='RC_CHANNELS_OVERRIDE', blocking=False)
+                if msg:
+                    # Retrieve raw PWM from channel 8
+                    raw_pwm = msg.chan8_raw
+                    # Reverse scale: (PWM - 1000) / (1000 / 360)
+                    calculated_angle = (raw_pwm - 1000) * (360 / 1000)
+                    self.current_flap_angle = max(0, calculated_angle)
                     self.flap_angle_var.set(f"{self.current_flap_angle:.2f} °")
             except: pass
         self.after(50, self.poll_flap_data)
 
     def update_pwm_display(self, key):
-        """Updates the PWM preview label based on angle input"""
         entry = self.surface_entries.get(key); label = self.pwm_display_labels.get(key)
         if not entry or not label: return
         try:
@@ -254,14 +259,12 @@ class ServoUI(ctk.CTk):
         except: label.configure(text="PWM: --")
 
     def send_angle(self, servo_indices, surface_name):
-        """Calculates PWM and sends command for specific control surfaces"""
         if not self.mav: return
         try:
             angle = float(self.surface_entries[tuple(servo_indices)].get().strip())
             servo_angle_map = {}
             for idx in servo_indices:
                 servo_num = idx + 1
-                # Auto-reverse logic for specific linked servos (e.g., Ch 2)
                 target_angle = (180 - angle) if (servo_num == 2 and 1 in [i+1 for i in servo_indices]) else angle
                 servo_angle_map[servo_num] = target_angle
             self._batch_send(servo_angle_map)
@@ -269,7 +272,6 @@ class ServoUI(ctk.CTk):
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def _batch_send(self, servo_angles):
-        """Internal method to send PWM overrides via RC_CHANNELS_OVERRIDE"""
         channels = [65535] * 8
         for servo_num, angle in servo_angles.items():
             pwm = (20 / 3) * angle + 950
@@ -277,7 +279,6 @@ class ServoUI(ctk.CTk):
         self.mav.mav.rc_channels_override_send(self.mav.target_system, self.mav.target_component, *channels)
 
     def batch_send_all_servos(self):
-        """Sends commands for all servos simultaneously in Debug Mode"""
         if not self.debug_mode or not self.mav: return
         angles = {}
         for (idx,), entry in self.surface_entries.items():
@@ -286,14 +287,12 @@ class ServoUI(ctk.CTk):
         if angles: self._batch_send(angles)
 
     def toggle_debug_mode(self):
-        """Toggles between surface-grouped and individual servo control"""
         self.debug_mode = not self.debug_mode
         self.debug_button.configure(text="Exit Debug" if self.debug_mode else "Enter Debug", fg_color="#d35b5b" if self.debug_mode else "gray")
         self.batch_send_button.configure(state="normal" if self.debug_mode else "disabled", fg_color="#118ab2" if self.debug_mode else "gray")
         self._build_servo_grid()
 
     def toggle_safety(self):
-        """Triggers hardware safety switch toggle"""
         if not self.mav: return
         import Arm_example
         self.safety_enabled = not self.safety_enabled
@@ -301,7 +300,6 @@ class ServoUI(ctk.CTk):
             self.safety_button.configure(text="Safety Enabled" if self.safety_enabled else "Safety Disabled")
 
     def toggle_arming(self):
-        """Triggers vehicle arming/disarming toggle"""
         if not self.mav: return
         import Arm_example
         self.armed = not self.armed
@@ -310,18 +308,15 @@ class ServoUI(ctk.CTk):
             self.arming_status_label.configure(text="ARMED\nLOGGING" if self.armed else "DISARMED\nNO LOGGING", fg_color="green" if self.armed else "red")
 
     def trigger_lua(self, action):
-        """Sends MAVLink command to start/stop Lua scripts on the Cube"""
         if not self.mav: return
         self.mav.mav.command_long_send(self.mav.target_system, self.mav.target_component, mavutil.mavlink.MAV_CMD_SCRIPTING, 0, 0, action, 0, 0, 0, 0, 0)
 
     def update_status(self):
-        """Periodically checks and updates the connection status display"""
         status = get_connection_status().capitalize()
         self.status_var.set(status); self.status_label.configure(text_color="green" if status == "Connected" else "red")
         self.after(1000, self.update_status)
 
     def update_attitude(self):
-        """Updates UI attitude variables with live data from flight controller"""
         if get_connection_status() == "connected":
             att = get_attitude()
             self.roll_var.set(f"Roll: {att['roll']:.2f}"); self.pitch_var.set(f"Pitch: {att['pitch']:.2f}"); self.yaw_var.set(f"Yaw: {att['yaw']:.2f}")
