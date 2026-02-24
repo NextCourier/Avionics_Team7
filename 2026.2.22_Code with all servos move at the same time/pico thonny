@@ -1,23 +1,24 @@
-######################################################################################
-# Set-Up Guide: 
-# Use pico with telem1 port. Set Telem1Baud to 921600 and Telem1Protocol to 2 for Mavlink2.
-# Turn off ADSB_TYPE (0). Also set your wifi module to connect with 921600 baud rate for consistency
-########################################################################################
-
-
-from machine import Pin, UART
+import machine
 import utime as time
+from machine import Pin, UART
 from pymavminimal import MAVLink
 
+# --- Performance Boost ---
+machine.freq(240000000)
+
 # --- Hardware Setup ---
+led = Pin("LED", Pin.OUT)
 pin_a = Pin(2, Pin.IN, Pin.PULL_UP)
 pin_b = Pin(3, Pin.IN, Pin.PULL_UP)
 uart = UART(1, baudrate=921600, tx=Pin(4), rx=Pin(5))
 
-# --- Encoder Variables ---
+# --- Encoder & State Variables ---
 counter = 0
 ppr = 500
 counts_per_rev = ppr * 2 
+logging_active = False
+log_file = None
+active_wing = "PORT"
 
 def encoder_handler(pin):
     global counter
@@ -32,43 +33,52 @@ pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder_handler)
 mav = MAVLink(1, 100)
 last_heartbeat = 0
 last_data = 0
-last_print = 0
-active_wing = "PORT (Left)"
-
-print("--- Pico Flap Testbed: System Ready ---")
 
 while True:
     current_time = time.ticks_ms()
 
-    # --- 1. Listen for STATUSTEXT Commands (Non-Blocking) ---
+    # --- 1. Listen for UI Commands ---
     if uart.any():
-        try:
-            raw_rx = uart.read()
-            # We look for the raw ASCII strings within the MAVLink frame
-            if b"ZERO" in raw_rx:
-                counter = 0
-                print(">> RECEIVED: ZERO COMMAND")
-            elif b"TOGGLE" in raw_rx:
-                active_wing = "STARBOARD (Right)" if active_wing == "PORT (Left)" else "PORT (Left)"
-                print(">> RECEIVED: TOGGLE WING ->", active_wing)
-        except Exception as e:
-            # This prevents the script from stopping if it hears 'noise'
-            pass
+        raw_rx = uart.read()
+        if b"START_LOG" in raw_rx and not logging_active:
+            try:
+                fname = "log_{}.csv".format(current_time)
+                log_file = open(fname, "w")
+                log_file.write("Timestamp_ms,Wing,Angle_deg\n")
+                logging_active = True
+                led.on()
+                # Send filename back to UI as a named value or text
+                print("Logging Started:", fname)
+            except: pass
+            
+        elif b"STOP_LOG" in raw_rx and logging_active:
+            logging_active = False
+            log_file.flush()
+            log_file.close()
+            log_file = None
+            led.off()
+            print("Logging Stopped.")
 
-    # --- 2. Heartbeat (1Hz) ---
+        elif b"ZERO" in raw_rx:
+            counter = 0
+        elif b"TOGGLE" in raw_rx:
+            active_wing = "STARBOARD" if active_wing == "PORT" else "PORT"
+
+    # --- 2. Heartbeat & LED Pulse ---
     if time.ticks_diff(current_time, last_heartbeat) >= 1000:
-        msg = mav.heartbeat_encode(6, 8, 0, 0, 0)
-        uart.write(msg.pack(mav))
+        uart.write(mav.heartbeat_encode(6, 8, 0, 0, 0).pack(mav))
+        if not logging_active:
+            led.value(not led.value()) # Blink while waiting
         last_heartbeat = current_time
+        if logging_active: log_file.flush()
 
-    # --- 3. Process and Send Angle Data (50Hz) ---
+    # --- 3. Process, Send, and LOG (50Hz) ---
     if time.ticks_diff(current_time, last_data) >= 20:
         angle = (counter / counts_per_rev) * 360.0
-        msg = mav.named_value_float_encode(time.ticks_ms(), "FlapAngle", angle)
+        if logging_active:
+            log_file.write("{},{},{:.2f}\n".format(current_time, active_wing, angle))
+        
+        # Send live data to UI
+        msg = mav.named_value_float_encode(current_time, "FlapAngle", angle)
         uart.write(msg.pack(mav))
         last_data = current_time
-
-    # --- 4. Terminal Output (2Hz) ---
-    if time.ticks_diff(current_time, last_print) >= 500:
-        print("Wing: {} | Angle: {:.2f}°".format(active_wing, angle))
-        last_print = current_time
