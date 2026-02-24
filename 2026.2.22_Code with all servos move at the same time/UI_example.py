@@ -1,7 +1,7 @@
 ##########################################
 # Servo Control UI
 # Authors: Bhakti Jenna, Weilian Chen, Ismail Zarif
-# Updated: Integrated Pico Flap Monitoring (RC Override Method)
+# Updated: Integrated MAVLink Text Commands & Named Value Float Monitoring
 ##########################################
 
 import customtkinter as ctk
@@ -61,10 +61,9 @@ class ServoUI(ctk.CTk):
         self._setup_sidebar()
         self._setup_main_content()
 
-        # Start real-time updates
-        self.update_status()
-        self.update_attitude()
-        self.poll_flap_data() 
+        self.update_connection_label() 
+        self.logging_on = False
+        self.master_update()
 
     def _setup_sidebar(self):
         """Setup left sidebar with connection/status controls"""
@@ -140,6 +139,13 @@ class ServoUI(ctk.CTk):
         )
         self.arming_status_label.grid(row=12, column=0, padx=20, pady=(10, 20), sticky="s")
 
+        # CSV logging on the Pico
+        self.log_toggle_button = ctk.CTkButton(
+        self.sidebar_frame, text="Start Pico Logging",
+        fg_color="#2a9d8f", command=self.toggle_pico_logging
+        )
+        self.log_toggle_button.grid(row=10, column=0, padx=20, pady=10)
+
     def _setup_main_content(self):
         """Setup main content area with dashboard and control surfaces"""
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
@@ -177,6 +183,10 @@ class ServoUI(ctk.CTk):
         manual_frame.grid(row=3, column=0, sticky="ew")
         self.attitude_entry = ctk.CTkEntry(manual_frame, width=400, height=30, placeholder_text="-- MAVLink Raw Stream --")
         self.attitude_entry.pack(padx=20, pady=20, fill="x")
+
+        # Flap Angle Data Logger
+        self.log_status_var = tk.StringVar(value="Pico Log: Inactive")
+        ctk.CTkLabel(dash_frame, textvariable=self.log_status_var, font=ctk.CTkFont(size=12, slant="italic")).grid(row=3, column=0, padx=10, pady=(0, 10), sticky="w")
 
     def _build_servo_grid(self):
         """Clears and rebuilds the servo grid with live PWM display"""
@@ -217,36 +227,76 @@ class ServoUI(ctk.CTk):
                 ctk.CTkButton(debug_frame, text="Send", width=60, command=lambda idx=(i,), n=f"CH {i+1}": self.send_angle(idx, n)).grid(row=row, column=col+3, padx=5)
 
     def send_toggle_wing(self):
-        """Sends command to Pico to switch labeling between FlapL and FlapR"""
+        """Sends MAVLink STATUSTEXT 'TOGGLE' to Pico via Cube forwarding"""
         if self.mav:
-            self.mav.write(b"TOGGLE_WING")
+            text = "TOGGLE"
+            self.mav.mav.statustext_send(mavutil.mavlink.MAV_SEVERITY_INFO, text.encode())
+            
+            # Update UI state
             self.active_wing_label = "FlapR" if self.active_wing_label == "FlapL" else "FlapL"
             self.flap_wing_var.set(f"Testing: {'STARBOARD (Right)' if self.active_wing_label == 'FlapR' else 'PORT (Left)'}")
+            print(f"Sent MAVLink Text: {text}")
 
     def send_zero_flaps(self):
-        """Sends command to Pico to reset encoder count to zero"""
+        """Sends MAVLink STATUSTEXT 'ZERO' to Pico via Cube forwarding"""
         if self.mav: 
-            self.mav.write(b"ZERO_FLAPS")
-            messagebox.showinfo("Pico", "Zeroing command sent.")
+            text = "ZERO"
+            self.mav.mav.statustext_send(mavutil.mavlink.MAV_SEVERITY_INFO, text.encode())
+            messagebox.showinfo("Pico", "Zeroing command sent via MAVLink Text.")
+            print(f"Sent MAVLink Text: {text}")
 
-    def poll_flap_data(self):
+    def update_connection_label(self):
+        """Slow loop (1Hz) to check if the Cube is still talking to us."""
+        status = get_connection_status().capitalize()
+        self.status_var.set(status)
+        # Visual color cue for connection
+        self.status_label.configure(text_color="green" if status == "Connected" else "red")
+        
+        # Schedule next check in 1000ms
+        self.after(1000, self.update_connection_label)
+
+    def master_update(self):
         """
-        Polls MAVLink for RC_CHANNELS_OVERRIDE messages from Pico on Channel 8.
-        Scales PWM (1000-2000) back to Angle (0-360).
+        The Master Loop (100Hz): Drains the MAVLink buffer to prevent lag.
+        This provides Attitude-level smoothness for the Flap Angle.
         """
         if self.mav:
             try:
-                # Listen for RC Override (ID 70)
-                msg = self.mav.recv_match(type='RC_CHANNELS_OVERRIDE', blocking=False)
-                if msg:
-                    # Retrieve raw PWM from channel 8
-                    raw_pwm = msg.chan8_raw
-                    # Reverse scale: (PWM - 1000) / (1000 / 360)
-                    calculated_angle = (raw_pwm - 1000) * (360 / 1000)
-                    self.current_flap_angle = max(0, calculated_angle)
-                    self.flap_angle_var.set(f"{self.current_flap_angle:.2f} °")
-            except: pass
-        self.after(50, self.poll_flap_data)
+                # DRAIN THE BUFFER: Process every message currently waiting
+                while True:
+                    msg = self.mav.recv_match(blocking=False)
+                    if not msg:
+                        break # Exit loop when buffer is empty
+                    
+                    msg_type = msg.get_type()
+
+                    # 1. Update Attitude (Matches your smooth Roll/Pitch/Yaw)
+                    if msg_type == 'ATTITUDE':
+                        # Convert Radians to Degrees
+                        r = msg.roll * 57.2958
+                        p = msg.pitch * 57.2958
+                        y = msg.yaw * 57.2958
+                        
+                        self.roll_var.set(f"Roll: {r:.2f}")
+                        self.pitch_var.set(f"Pitch: {p:.2f}")
+                        self.yaw_var.set(f"Yaw: {y:.2f}")
+                        
+                        # Update the raw stream display
+                        self.attitude_entry.delete(0, tk.END)
+                        self.attitude_entry.insert(0, f"R:{r:.1f} P:{p:.1f} Y:{y:.1f}")
+
+                    # 2. Update Flap Angle (Injected 50Hz data from Pico)
+                    elif msg_type == 'NAMED_VALUE_FLOAT' and msg.name == 'FlapAngle':
+                        self.current_flap_angle = msg.value
+                        self.flap_angle_var.set(f"{self.current_flap_angle:.2f} °")
+
+            except Exception as e:
+                # Catch errors without crashing the whole UI
+                print(f"MAVLink Stream Error: {e}")
+
+        # Schedule next run in 10ms (100Hz)
+        # Running faster than the 50Hz source ensures zero backlog
+        self.after(10, self.master_update)
 
     def update_pwm_display(self, key):
         entry = self.surface_entries.get(key); label = self.pwm_display_labels.get(key)
@@ -316,12 +366,30 @@ class ServoUI(ctk.CTk):
         self.status_var.set(status); self.status_label.configure(text_color="green" if status == "Connected" else "red")
         self.after(1000, self.update_status)
 
-    def update_attitude(self):
-        if get_connection_status() == "connected":
-            att = get_attitude()
-            self.roll_var.set(f"Roll: {att['roll']:.2f}"); self.pitch_var.set(f"Pitch: {att['pitch']:.2f}"); self.yaw_var.set(f"Yaw: {att['yaw']:.2f}")
-            self.attitude_entry.delete(0, tk.END); self.attitude_entry.insert(0, f"R:{att['roll']:.2f} P:{att['pitch']:.2f} Y:{att['yaw']:.2f}")
-        self.after(100, self.update_attitude)
+    def toggle_pico_logging(self):
+        if not self.mav: 
+            messagebox.showwarning("Connection", "Cube not connected!")
+            return
+        
+        if not self.logging_on:
+            # User wants to START
+            self.mav.mav.statustext_send(mavutil.mavlink.MAV_SEVERITY_INFO, "START_LOG".encode())
+            self.logging_on = True
+            
+            # Update Button Appearance
+            self.log_toggle_button.configure(text="Stop Pico Logging", fg_color="#e76f51")
+            self.log_status_var.set("Pico Log: RECORDING")
+            print("Command Sent: START_LOG")
+        else:
+            # User wants to STOP
+            self.mav.mav.statustext_send(mavutil.mavlink.MAV_SEVERITY_INFO, "STOP_LOG".encode())
+            self.logging_on = False
+            
+            # Update Button Appearance back to default
+            self.log_toggle_button.configure(text="Start Pico Logging", fg_color="#2a9d8f")
+            self.log_status_var.set("Pico Log: Idle")
+            print("Command Sent: STOP_LOG")
+            messagebox.showinfo("Pico Logging", "Data successfully saved to Pico flash.")
 
 if __name__ == "__main__":
     app = ServoUI()
