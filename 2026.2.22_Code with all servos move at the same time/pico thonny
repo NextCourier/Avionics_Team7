@@ -1,3 +1,10 @@
+######################################################################################
+# Set-Up Guide: 
+# Use pico with telem1 port. Set Telem1Baud to 921600 and Telem1Protocol to 2 for Mavlink2.
+# Turn off ADSB_TYPE (0). Also set your wifi module to connect with 921600 baud rate for consistency
+########################################################################################
+
+
 from machine import Pin, UART
 import utime as time
 from pymavminimal import MAVLink
