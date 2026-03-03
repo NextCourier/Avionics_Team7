@@ -23,48 +23,94 @@ DEFAULT_SERVO_CONFIG = {
     "reversed": False
 }
 
-def angle_to_pwm(angle):
-    return (20/3) * angle + 950
-
 def mav_bytes(string):
-    # Convert string to MAVLink byte format
     return bytes(string, 'utf-8')
 
+# --- Specialized Surface Classes ---
+
 class Servo:
-    def __init__(self, pin, min_pwm=DEFAULT_SERVO_CONFIG["min_pwm"],
-                 max_pwm=DEFAULT_SERVO_CONFIG["max_pwm"],
-                 trim_pwm=DEFAULT_SERVO_CONFIG["trim_pwm"], reversed=False):
+    def __init__(self, pin, min_pwm=950, max_pwm=2150, mirrored=False):
         self.pin = pin
         self.min = min_pwm
         self.max = max_pwm
-        self.trim = trim_pwm
-        self.reversed = reversed
+        self.mirrored = mirrored
+
+    def _prepare_angle(self, angle):
+        if self.mirrored:
+            return max(0, min(180, 180 - angle))
+        return angle
+
+    def _clamp(self, pwm):
+        return max(self.min, min(self.max, int(pwm)))
 
     def angle_to_pwm(self, angle):
-        pwm = angle_to_pwm(angle)
-        return max(self.min, min(self.max, pwm))
+        a = self._prepare_angle(angle)
+        return self._clamp((20/3) * a + 950)
 
-    def reverse_angle(self, angle):
-        # calculate the angle for servo2 to inverse
-        reversed_angle = 180 - angle
-        return max(0, min(180, reversed_angle))
+class PortFlapServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        return self._clamp(-7.19 * a + 1607)
+
+class StarboardFlapServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        return self._clamp(31.3 * a + 1205)
+
+class ElevatorServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        return self._clamp(10.78 * a + 1417)
+
+class PortAileronServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        # Add specific aileron math here
+        return self._clamp((20/3) * a + 950)
+
+class StarboardAileronServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        return self._clamp((20/3) * a + 950)
+
+class RudderServo(Servo):
+    def angle_to_pwm(self, angle):
+        a = self._prepare_angle(angle)
+        return self._clamp((20/3) * a + 950)
+
+
 
 class ServoController:
-    def __init__(self, mav, servo_number):
-        if not 1 <= servo_number <= 8:
-            raise ValueError("Servo number must be between 1 and 8")
+    def __init__(self, mav, servo_number, surface_type="default", mirrored=False):
         self.mav = mav
         self.servo_number = servo_number
         self.pin = SERVO_PINS[servo_number]
-        self.servo = Servo(self.pin)
+        
+        surface_map = {
+            "port_flap": PortFlapServo,
+            "starboard_flap": StarboardFlapServo,
+            "elevator": ElevatorServo,
+            "port_aileron": PortAileronServo,
+            "starboard_aileron": StarboardAileronServo,
+            "rudder": RudderServo,
+            "default": Servo
+        }
+        
+        servo_class = surface_map.get(surface_type, Servo)
+        self.servo = servo_class(self.pin, mirrored=mirrored)
+
+    def get_pwm(self, angle):
+        """Calculates PWM using the specialized class logic."""
+        return self.servo.angle_to_pwm(angle)
 
     def write_servo_params(self):
+        """Restored: Tells the Flight Controller the Min/Max PWM limits."""
         print(f"Setting parameters for Servo {self.servo_number}...")
         param_map = {
             "MAX": self.servo.max,
             "MIN": self.servo.min,
-            "TRIM": self.servo.trim,
-            "REVERSED": int(self.servo.reversed)
+            "TRIM": 1500,
+            "REVERSED": 0  # 0 because we handle 'mirrored' in Python now
         }
         for key, value in param_map.items():
             self.mav.mav.param_set_send(
@@ -75,54 +121,33 @@ class ServoController:
                 mavutil.mavlink.MAV_PARAM_TYPE_REAL32
             )
         time.sleep(0.05)
-        print(f"Parameters set for Servo {self.servo_number} successfully")
 
-    def send_angle(self, angle, method="servo"):
-        if not 0 <= angle <= 180:
-            raise ValueError("Angle must be between 0 and 180 degrees")
-        pwm = self.servo.angle_to_pwm(angle)
-        print(f"Servo {self.servo_number}: {angle}° → PWM {pwm}")
-
-        if method == "servo":
-            self.mav.mav.command_long_send(
-                self.mav.target_system,
-                self.mav.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                0,  # Confirmation
-                self.pin,  # Servo pin
-                pwm,  # PWM value
-                0, 0, 0, 0, 0  # Unused parameters
-            )
+    def send_angle(self, angle):
+        """Sends a single servo move command."""
+        pwm = self.get_pwm(angle)
+        self.mav.mav.command_long_send(
+            self.mav.target_system,
+            self.mav.target_component,
+            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+            0, self.pin, pwm, 0, 0, 0, 0, 0
+        )
+        return pwm
 
     def send_batch_angles(self, servo_angle_map):
+        """Restored: Updates multiple servos at once (used in your main test loop)."""
         channels = [65535] * 8
-
-        # logic of how servo1 and servo2 move inversely
-        if 1 in servo_angle_map and 2 in servo_angle_map:
-            base_angle = servo_angle_map[1]
-            servo_angle_map[1] = base_angle
-            servo_angle_map[2] = self.servo.reverse_angle(base_angle)
         for servo_num, angle in servo_angle_map.items():
-            if not 1 <= servo_num <= 8:
-                raise ValueError(f"servo{servo_num}out of range（1-8）")
-            if not 0 <= angle <= 180:
-                raise ValueError(f"servo{servo_num}angle{angle}out of range（0-180）")
+            # Note: This uses default math for the test loop. 
+            # The UI uses the specialized controllers initialized in _init_controllers.
+            temp_servo = Servo(SERVO_PINS[servo_num])
+            channels[servo_num - 1] = int(temp_servo.angle_to_pwm(angle))
 
-            sub_servo = ServoController(self.mav, servo_num)
-            pwm = sub_servo.servo.angle_to_pwm(angle)
-            channels[servo_num - 1] = int(pwm)
-
-        # send all channel data at the same time
         self.mav.mav.rc_channels_override_send(
             self.mav.target_system,
             self.mav.target_component,
             *channels
-        )
+        )  
 
-        print("send batch angles：")
-        for servo_num, angle in servo_angle_map.items():
-            pwm = ServoController(self.mav, servo_num).servo.angle_to_pwm(angle)
-            print(f"servo{servo_num}: {angle}° → PWM {pwm}")
 
 def setup_mav():
     mav = mavutil.mavlink_connection('udp:0.0.0.0:15110')
