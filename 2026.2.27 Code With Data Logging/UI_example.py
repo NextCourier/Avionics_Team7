@@ -12,7 +12,7 @@ from tkinter import messagebox
 import time
 from GS_example import get_connection_status, get_attitude
 from pymavlink import mavutil
-from Servo_example import angle_to_pwm, Servo, DEFAULT_SERVO_CONFIG
+from Servo_example import ServoController, Servo, DEFAULT_SERVO_CONFIG
 
 
 class ServoUI(ctk.CTk):
@@ -25,6 +25,7 @@ class ServoUI(ctk.CTk):
         self.override_channels = [65535] * 8
         self.override_active = False
         self.mav = next(iter(self.servo_config.values())).mav if self.servo_config else None
+        self._init_controllers()
         self.local_logging_active = False
         self.csv_writer = None
         self.csv_file = None
@@ -92,6 +93,18 @@ class ServoUI(ctk.CTk):
             }
         }
 
+    def _init_controllers(self):
+        """Initialize the 8 physical servo controllers with their types and mirroring."""
+        self.servo_controllers = {
+            1: ServoController(self.mav, 1, "port_flap", mirrored=False),
+            2: ServoController(self.mav, 2, "port_flap", mirrored=True),
+            3: ServoController(self.mav, 3, "port_aileron", mirrored=False),
+            4: ServoController(self.mav, 4, "starboard_flap", mirrored=False),
+            5: ServoController(self.mav, 5, "starboard_aileron", mirrored=True),
+            6: ServoController(self.mav, 6, "elevator", mirrored=False),
+            7: ServoController(self.mav, 7, "elevator", mirrored=True),
+            8: ServoController(self.mav, 8, "rudder", mirrored=False)
+        }
     def start_keep_alive(self):
         self.maintain_current_angles()
         self.after(500, self.start_keep_alive)
@@ -587,84 +600,54 @@ class ServoUI(ctk.CTk):
         self.after(5, self.master_update)
 
     def update_pwm_display(self, key):
-        entry = self.surface_entries.get(key);
+        """Updates the UI display with the calculated PWM for that specific surface."""
+        entry = self.surface_entries.get(key)
         label = self.pwm_display_labels.get(key)
         if not entry or not label: return
         try:
             angle = float(entry.get().strip())
-            pwm = (20 / 3) * angle + 950
-            pwm = max(DEFAULT_SERVO_CONFIG["min_pwm"], min(DEFAULT_SERVO_CONFIG["max_pwm"], pwm))
+            # Use the first servo in the group for the UI display example
+            first_servo_num = key[0] + 1
+            pwm = self.servo_controllers[first_servo_num].get_pwm(angle)
             label.configure(text=f"PWM: {int(pwm)}", text_color="#118ab2")
         except:
             label.configure(text="PWM: --")
 
+
     def send_angle(self, servo_indices, surface_name):
+        """Send angle to a group of servos (e.g., dual-servo flaps)."""
         if not self.mav: return
         try:
-            val_str = self.surface_entries[tuple(servo_indices)].get().strip()
-            angle = float(val_str)
-            servo_angle_map = {}
-            for idx in servo_indices:
-                servo_num = idx + 1
-                target_angle = (180 - angle) if (servo_num == 2 and 1 in [i + 1 for i in servo_indices]) else angle
-                servo_angle_map[servo_num] = target_angle
-            self._batch_send(servo_angle_map, input_angle=angle)  # 传入 angle
+            angle = float(self.surface_entries[tuple(servo_indices)].get().strip())
+            servo_angle_map = {idx + 1: angle for idx in servo_indices}
+            
+            # The mirrored servos in the map will handle themselves via _batch_send
+            self._batch_send(servo_angle_map, input_angle=angle)
             messagebox.showinfo("Success", f"{surface_name} sent.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+
 
     def _batch_send(self, servo_angles, input_angle="N/A"):
+        """Refined batch send: No manual mirror math needed here anymore!"""
         if not self.control_manager or not self.control_manager.is_code_control():
-            print("Ignored: Not in CODE control mode")
             return
-        if not self.mav:
-            return
-
-        if 1 in servo_angles and 2 not in servo_angles:
-            servo_angles[2] = 180 - servo_angles[1]
-
-        if 2 in servo_angles and 1 not in servo_angles:
-            servo_angles[1] = 180 - servo_angles[2]
-
-        if 6 in servo_angles:
-            servo_angles[7] = 180 - servo_angles[6]
-        elif 7 in servo_angles:
-            servo_angles[6] = 180 - servo_angles[7]
+        if not self.mav: return
 
         for servo_num, angle in servo_angles.items():
-
-            if servo_num == 3:
-                if angle == 0:
-                    angle = 1
-                elif angle == 180:
-                    angle = 179
-
-            angle = max(0, min(180, angle))
-
-            pwm = (20 / 3) * angle + 950
-            pwm = max(DEFAULT_SERVO_CONFIG["min_pwm"],
-                      min(DEFAULT_SERVO_CONFIG["max_pwm"], pwm))
-
-            self.override_channels[servo_num - 1] = int(pwm)
+            if servo_num in self.servo_controllers:
+                # Mirroring and calibration are handled inside the controller object
+                pwm = self.servo_controllers[servo_num].get_pwm(angle)
+                self.override_channels[servo_num - 1] = int(pwm)
 
         self.mav.mav.rc_channels_override_send(
-            self.mav.target_system,
-            self.mav.target_component,
-            *self.override_channels
+            self.mav.target_system, self.mav.target_component, *self.override_channels
         )
 
-        if self.local_logging_active and self.csv_writer:
-
-            if self.override_channels != self.last_logged_positions.get("channels"):
-                timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                self.csv_writer.writerow(
-                    [timestamp, input_angle] + self.override_channels
-                )
-                self.csv_file.flush()
-
-                self.last_logged_positions["channels"] = self.override_channels.copy()
+        if self.local_logging_active and self.csv_file:
+            timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            self.csv_writer.writerow([timestamp, input_angle] + self.override_channels)
+            self.csv_file.flush()
 
     def batch_send_all_servos(self):
         if not self.debug_mode or not self.mav: return
