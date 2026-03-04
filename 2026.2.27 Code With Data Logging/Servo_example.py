@@ -23,8 +23,10 @@ DEFAULT_SERVO_CONFIG = {
     "reversed": False
 }
 
+
 def mav_bytes(string):
     return bytes(string, 'utf-8')
+
 
 # --- Specialized Surface Classes ---
 
@@ -45,39 +47,44 @@ class Servo:
 
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
-        return self._clamp((20/3) * a + 950)
+        return self._clamp((20 / 3) * a + 950)
+
 
 class PortFlapServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
         return self._clamp(-7.19 * a + 1607)
 
+
 class StarboardFlapServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
-        return self._clamp(31.3 * a + 1205)
+        return self._clamp(28 * a + 1205)
+
 
 class ElevatorServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
         return self._clamp(10.78 * a + 1417)
 
+
 class PortAileronServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
         # Add specific aileron math here
-        return self._clamp((20/3) * a + 950)
+        return self._clamp((20 / 3) * a + 950)
+
 
 class StarboardAileronServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
-        return self._clamp((20/3) * a + 950)
+        return self._clamp((20 / 3) * a + 950)
+
 
 class RudderServo(Servo):
     def angle_to_pwm(self, angle):
         a = self._prepare_angle(angle)
-        return self._clamp((20/3) * a + 950)
-
+        return self._clamp((20 / 3) * a + 950)
 
 
 class ServoController:
@@ -85,7 +92,7 @@ class ServoController:
         self.mav = mav
         self.servo_number = servo_number
         self.pin = SERVO_PINS[servo_number]
-        
+
         surface_map = {
             "port_flap": PortFlapServo,
             "starboard_flap": StarboardFlapServo,
@@ -95,7 +102,7 @@ class ServoController:
             "rudder": RudderServo,
             "default": Servo
         }
-        
+
         servo_class = surface_map.get(surface_type, Servo)
         self.servo = servo_class(self.pin, mirrored=mirrored)
 
@@ -137,7 +144,7 @@ class ServoController:
         """Restored: Updates multiple servos at once (used in your main test loop)."""
         channels = [65535] * 8
         for servo_num, angle in servo_angle_map.items():
-            # Note: This uses default math for the test loop. 
+            # Note: This uses default math for the test loop.
             # The UI uses the specialized controllers initialized in _init_controllers.
             temp_servo = Servo(SERVO_PINS[servo_num])
             channels[servo_num - 1] = int(temp_servo.angle_to_pwm(angle))
@@ -146,7 +153,7 @@ class ServoController:
             self.mav.target_system,
             self.mav.target_component,
             *channels
-        )  
+        )
 
 
 def setup_mav():
@@ -158,6 +165,7 @@ def setup_mav():
     servo_controller = ServoController(mav, servo_number)
     servo_controller.write_servo_params()
     return servo_controller, mav
+
 
 def main():
     try:
@@ -185,6 +193,7 @@ def main():
         print("All servo commands sent successfully")
     except Exception as e:
         print(f"Error: {str(e)}")
+
 
 # Test code
 if __name__ == "__main__":
