@@ -635,34 +635,43 @@ class ServoUI(ctk.CTk):
 
         for servo_num, angle in servo_angles.items():
 
-            # if servo_num == 3:
-            #     if angle == 0:
-            #         angle = 1
-            #     elif angle == 180:
-            #         angle = 179
+            if servo_num == 3:
+                if angle == 0:
+                    angle = 1
+                elif angle == 180:
+                    angle = 179
 
-            if servo_num in [6, 7]:
+
+
+            if servo_num == 3:
+                if angle == 380:
+                    servo_angle = 65535
+                else:
+                    angle = max(-40, min(40, angle))
+                    servo_angle = 1.3155 * angle + 90.204
+
+            elif servo_num == 4:
+                # angle = max(0, min(30, angle))
+                servo_angle = 4.4753 * angle + 45.566
+
+            elif servo_num == 5:
+                angle = max(-45, min(45, angle))
+                servo_angle = -0.1158 * angle -125.9285
+
+            elif servo_num in [6, 7]:
 
                 angle = max(-45, min(45, angle))
 
-                base_servo_angle = 1.556 * angle + 73.743
+                base_servo_angle = 1.926 * angle + 83.4
 
                 if servo_num == 7:
-                    servo_angle = 180 - base_servo_angle
+                    servo_angle = 180 - base_servo_angle - 10
                 else:
                     servo_angle = base_servo_angle
 
-            elif servo_num == 4:
-                angle = max(0, min(30, angle))
-                servo_angle = 4.4753 * angle + 45.566
-
-            elif servo_num == 3:
-                angle = max(-40, min(40, angle))
-                servo_angle = 1.3155 * angle + 90.204
-
             elif servo_num == 8:
                 angle = max(-45, min(45, angle))
-                servo_angle = 1.8305 * angle + 78.281
+                servo_angle = 1.8305 * angle + 85
 
             else:
                 servo_angle = angle
