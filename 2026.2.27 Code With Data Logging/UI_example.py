@@ -606,9 +606,9 @@ class ServoUI(ctk.CTk):
             servo_angle_map = {}
             for idx in servo_indices:
                 servo_num = idx + 1
-                target_angle = (180 - angle) if (servo_num == 2 and 1 in [i + 1 for i in servo_indices]) else angle
+                target_angle = angle
                 servo_angle_map[servo_num] = target_angle
-            self._batch_send(servo_angle_map, input_angle=angle)  # 传入 angle
+            self._batch_send(servo_angle_map, input_angle=angle)
             messagebox.showinfo("Success", f"{surface_name} sent.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -622,11 +622,11 @@ class ServoUI(ctk.CTk):
         if not self.mav:
             return
 
-        if 1 in servo_angles and 2 not in servo_angles:
-            servo_angles[2] = 180 - servo_angles[1]
-
-        if 2 in servo_angles and 1 not in servo_angles:
-            servo_angles[1] = 180 - servo_angles[2]
+        # if 1 in servo_angles and 2 not in servo_angles:
+        #     servo_angles[2] = 180 - servo_angles[1]
+        #
+        # if 2 in servo_angles and 1 not in servo_angles:
+        #     servo_angles[1] = 180 - servo_angles[2]
 
         # if 6 in servo_angles:
         #     servo_angles[7] = 180 - servo_angles[6]
@@ -641,22 +641,39 @@ class ServoUI(ctk.CTk):
                 elif angle == 180:
                     angle = 179
 
-
+        for servo_num, angle in servo_angles.items():
 
             if servo_num == 3:
-                if angle == 380:
-                    servo_angle = 65535
+                if angle == 0:
+                    angle = 1
+                elif angle == 180:
+                    angle = 179
+
+            if servo_num in [1, 2]:
+
+                angle = max(-45, min(45, angle))
+
+                base_servo_angle = 0.963 * angle + 83.4
+
+                if servo_num == 2:
+                    servo_angle = 180 - base_servo_angle -13
                 else:
+                    servo_angle = base_servo_angle
+
+            elif servo_num == 3:
                     angle = max(-40, min(40, angle))
-                    servo_angle = 1.3155 * angle + 90.204
+                    servo_angle = 1.3707 * angle + 86.823
 
             elif servo_num == 4:
                 # angle = max(0, min(30, angle))
-                servo_angle = 4.4753 * angle + 45.566
+                # servo_angle = 4.3641 * angle - 0
+                angle = max(-40, min(40, angle))
+                servo_angle = 1.3707 * angle + 86.823
+
 
             elif servo_num == 5:
                 angle = max(-45, min(45, angle))
-                servo_angle = -0.1158 * angle -125.9285
+                servo_angle = -0.0044 * angle * angle +1.9308 * angle + 83.654
 
             elif servo_num in [6, 7]:
 
